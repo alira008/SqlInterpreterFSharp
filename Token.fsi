@@ -43,6 +43,7 @@ module Token =
         | Ties
         | Top
         | With
+        | Where
 
         member toDebugString: unit -> string
 

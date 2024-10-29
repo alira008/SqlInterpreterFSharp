@@ -44,6 +44,7 @@ module Token =
         | Ties
         | Top
         | With
+        | Where
 
         member this.toDebugString() =
             match this with
@@ -81,6 +82,7 @@ module Token =
             | Ties -> "Ties"
             | Top -> "Top"
             | With -> "With"
+            | Where -> "Where"
 
     let stringToKeyword str =
         match str with
@@ -93,6 +95,7 @@ module Token =
         | "ties" -> Some Ties
         | "top" -> Some Top
         | "with" -> Some With
+        | "where" -> Some Where
         | _ -> None
 
     type Token =

@@ -28,6 +28,9 @@ module Lexer =
     let isLetter char =
         (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char = '_')
 
+    let isNotClosingSquareBracket char = char <> ']'
+    let isNotClosingStringLiteral char = char <> '\''
+    let isNotNewLine char = char <> '\n'
     let isNumber char = char >= '0' && char <= '9'
 
     let createLexer input =
@@ -67,50 +70,118 @@ module Lexer =
         | None -> lexer, Token.Identifier str
         | Some kw -> lexer, kw
 
+    let readQuotedIdentifier lexer =
+        let lexer = readChar lexer
+        let mutable lexer, str = readWhile lexer isNotClosingSquareBracket
+
+        if str.Length = 0 then
+            lexer, Error "quoted identifier cannot have empty string"
+        else if lexer.Ch.IsSome && lexer.Ch.Value = ']' then
+            lexer <- readChar lexer
+            lexer, Ok str
+        else
+            lexer, Error "quoted identifier closing square bracket not found"
+
+    let readStringLiteral lexer =
+        let lexer = readChar lexer
+        let mutable lexer, str = readWhile lexer isNotClosingStringLiteral
+
+        if str.Length = 0 then
+            lexer, Error "string literal cannot have empty string"
+        else if lexer.Ch.IsSome && lexer.Ch.Value = '\'' then
+            lexer <- readChar lexer
+            lexer, Ok(str)
+        else
+            lexer, Error "string literal closing square apostrophe not found"
+
+    let readComment lexer =
+        // skip -- characters
+        let mutable lexer = readChar lexer
+        lexer <- readChar lexer
+        lexer <- skipWhitespace lexer
+        let lexer, str = readWhile lexer isNotNewLine
+
+        lexer, str
+
+    let readNumberLiteral lexer =
+        let mutable lexer, str = readWhile lexer isNumber
+        let nextCh = peekChar lexer
+
+        if nextCh.IsSome && nextCh.Value = '.' then
+            lexer <- readChar lexer
+            let lexer, str = readWhile lexer isNumber
+            lexer, str
+        else
+            lexer, str
+
+    let convertStringToNumberLiteral (lexer, str) = lexer, Ok(Token.NumberLiteral str)
+    let convertTokenTypeToResult (lexer, tokenType) = lexer, Ok tokenType
+    let convertStringToComment (lexer, str) = lexer, Ok (Token.Comment str)
+    let convertStringToStringLiteral (lexer,  result) =
+        match result with
+        | Error v -> lexer, Error v
+        | Ok str -> lexer, Ok(Token.StringLiteral str)
+
+    let convertStringToQuotedIdentifier (lexer, result) =
+        match result with
+        | Error v -> lexer, Error v
+        | Ok str -> lexer, Ok(Token.QuotedIdentifier str)
+
 
     let nextToken lexer =
         let lexer = lexer |> skipWhitespace
         let start = lexer.CurrentPosition
         let advance tokenType = lexer |> readChar, tokenType
+        let advanceOk tokenType = lexer |> readChar, Ok tokenType
 
         let lexer, tokenType =
             match lexer.Ch, peekChar lexer with
-            | None, None -> lexer, Token.Eof
-            | Some ',', _ -> advance Token.Comma
-            | Some '(', _ -> advance Token.LeftParen
-            | Some ')', _ -> advance Token.RightParen
-            | Some '=', _ -> advance Token.Equal
-            | Some '!', Some '=' -> advance Token.BangEqual
-            | Some '<', Some '>' -> advance Token.LessThanGreaterThan
-            | Some '<', Some '=' -> advance Token.BangEqual
-            | Some '<', _ -> advance Token.LessThan
-            | Some '>', Some '=' -> advance Token.GreaterThanEqual
-            | Some '>', _ -> advance Token.GreaterThan
-            | Some '+', _ -> advance Token.Plus
-            | Some '-', _ -> advance Token.Minus
-            | Some '/', _ -> advance Token.ForwardSlash
-            | Some '*', _ -> advance Token.Asterisk
-            | Some '%', _ -> advance Token.PercentSign
-            | Some '.', _ -> advance Token.Period
-            | Some ';', _ -> advance Token.SemiColon
-            | Some '_', Some nextCh when nextCh |> isLetter -> lexer |> readIdentifier
-            | Some ch, _ when ch |> isLetter -> lexer |> readIdentifier
-            | _ -> advance Token.Illegal
+            | None, None -> lexer, Ok Token.Eof
+            | Some ',', _ -> advanceOk Token.Comma
+            | Some '(', _ -> advanceOk Token.LeftParen
+            | Some ')', _ -> advanceOk Token.RightParen
+            | Some '=', _ -> advanceOk Token.Equal
+            | Some '!', Some '=' -> advanceOk Token.BangEqual
+            | Some '<', Some '>' -> advanceOk Token.LessThanGreaterThan
+            | Some '<', Some '=' -> advanceOk Token.BangEqual
+            | Some '<', _ -> advanceOk Token.LessThan
+            | Some '>', Some '=' -> advanceOk Token.GreaterThanEqual
+            | Some '>', _ -> advanceOk Token.GreaterThan
+            | Some '+', _ -> advanceOk Token.Plus
+            | Some '-', Some '-' -> lexer |> readComment |> convertStringToComment
+            | Some '-', _ -> advanceOk Token.Minus
+            | Some '/', _ -> advanceOk Token.ForwardSlash
+            | Some '*', _ -> advanceOk Token.Asterisk
+            | Some '%', _ -> advanceOk Token.PercentSign
+            | Some '.', _ -> advanceOk Token.Period
+            | Some ';', _ -> advanceOk Token.SemiColon
+            | Some '\'', _ -> lexer |> readStringLiteral |> convertStringToStringLiteral
+            | Some '[', _ -> lexer |> readQuotedIdentifier |> convertStringToQuotedIdentifier
+            | Some '_', Some nextCh when nextCh |> isLetter -> lexer |> readIdentifier |> convertTokenTypeToResult
+            | Some ch, _ when ch |> isLetter -> lexer |> readIdentifier |> convertTokenTypeToResult
+            | Some ch, _ when ch |> isNumber -> lexer |> readNumberLiteral |> convertStringToNumberLiteral
+            | _ -> advance (Error "illegal character received")
 
-        lexer,
-        { Token.Type = tokenType
-          Token.Span =
-            { Start = start
-              End = lexer.CurrentPosition } }
+        match tokenType with
+        | Error v -> Error v
+        | Ok tt ->
+            Ok(
+                lexer,
+                { Token.Type = tt
+                  Token.Span =
+                    { Start = start
+                      End = lexer.CurrentPosition-1 } }
+            )
 
     let tokenizeInput lexer =
         let rec loop lexer =
             seq {
                 match lexer |> nextToken with
-                | _, token when token.Type = Token.Eof -> yield token
-                | lexer, token ->
+                | Ok(_, token) when token.Type = Token.Eof -> yield token
+                | Ok(lexer, token) ->
                     yield token
                     yield! loop lexer
+                | Error _ -> yield! loop lexer
             }
 
         loop lexer
